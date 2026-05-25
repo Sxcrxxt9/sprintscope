@@ -91,6 +91,7 @@ h2 {
   gap: 10px;
 }
 
+.session-pill,
 .primary-button,
 .ghost-button {
   display: inline-flex;
@@ -102,6 +103,12 @@ h2 {
   border-radius: 8px;
   padding: 0 15px;
   font-weight: 750;
+}
+
+.session-pill {
+  color: #24546a;
+  background: #d8eaf1;
+  border-color: rgba(50, 107, 114, 0.22);
 }
 
 .primary-button {
@@ -209,6 +216,32 @@ h2 {
 .detail-panel {
   position: sticky;
   top: 18px;
+}
+
+.api-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
+  border-radius: 8px;
+  background: #edf5f6;
+  color: #224f58;
+  padding: 12px;
+}
+
+.api-status strong,
+.api-status span {
+  display: block;
+}
+
+.api-status strong {
+  font-size: 0.9rem;
+}
+
+.api-status span {
+  color: #56717a;
+  font-size: 0.78rem;
+  font-weight: 750;
 }
 
 .panel-heading,

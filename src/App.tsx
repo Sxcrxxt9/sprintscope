@@ -4,14 +4,27 @@ import {
   BarChart3,
   CheckCircle2,
   ClipboardCopy,
+  Database,
+  Download,
   Filter,
   Plus,
   RotateCcw,
   Search,
+  ShieldCheck,
 } from "lucide-react";
 import {
+  createWorkItemApi,
+  exportReleaseJson,
+  getAnalytics,
+  getSession,
+  getWorkItems,
+  resetDemoApi,
+  updateStatusApi,
+  type Analytics,
+  type Session,
+} from "./api";
+import {
   buildStandupSummary,
-  createWorkItem,
   filterItems,
   riskLevel,
   riskScore,
@@ -25,7 +38,6 @@ import {
   type Status,
   type WorkItem,
 } from "./domain";
-import { loadItems, resetItems, saveItems } from "./storage";
 
 const defaultFilters: Filters = {
   query: "",
@@ -53,15 +65,36 @@ function formatDate(iso: string): string {
 }
 
 function App() {
-  const [items, setItems] = useState<WorkItem[]>(() => loadItems());
+  const [items, setItems] = useState<WorkItem[]>([]);
+  const [analytics, setAnalytics] = useState<Analytics | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
   const [filters, setFilters] = useState<Filters>(defaultFilters);
   const [form, setForm] = useState(defaultForm);
-  const [selectedId, setSelectedId] = useState(items[0]?.id ?? "");
+  const [selectedId, setSelectedId] = useState("");
   const [notice, setNotice] = useState("");
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    saveItems(items);
-  }, [items]);
+    async function loadWorkspace() {
+      try {
+        const [sessionResponse, itemsResponse, analyticsResponse] = await Promise.all([
+          getSession(),
+          getWorkItems(),
+          getAnalytics(),
+        ]);
+        setSession(sessionResponse);
+        setItems(itemsResponse);
+        setAnalytics(analyticsResponse);
+        setSelectedId(itemsResponse[0]?.id ?? "");
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : "Could not connect to SprintScope API");
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    void loadWorkspace();
+  }, []);
 
   const filteredItems = useMemo(() => filterItems(items, filters), [items, filters]);
   const summary = useMemo(() => summarize(items), [items]);
@@ -69,32 +102,45 @@ function App() {
   const owners = useMemo(() => unique(items.map((item) => item.owner)), [items]);
   const selectedItem = items.find((item) => item.id === selectedId) ?? filteredItems[0] ?? items[0];
 
-  function updateStatus(itemId: string, status: Status) {
+  async function updateStatus(itemId: string, status: Status) {
+    const previousItems = items;
     setItems((current) =>
-      current.map((item) =>
-        item.id === itemId ? { ...item, status, updatedAt: new Date().toISOString() } : item,
-      ),
+      current.map((item) => (item.id === itemId ? { ...item, status, updatedAt: new Date().toISOString() } : item)),
     );
+
+    try {
+      const response = await updateStatusApi(itemId, status);
+      setItems((current) => current.map((item) => (item.id === itemId ? response.item : item)));
+      setAnalytics(response.analytics);
+    } catch (error) {
+      setItems(previousItems);
+      setNotice(error instanceof Error ? error.message : "Status update failed");
+    }
   }
 
-  function addItem(event: React.FormEvent<HTMLFormElement>) {
+  async function addItem(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!form.title.trim() || !form.owner.trim() || !form.team.trim()) return;
 
-    const nextItem = createWorkItem({
-      title: form.title.trim(),
-      team: form.team.trim(),
-      owner: form.owner.trim(),
-      severity: form.severity,
-      estimate: form.estimate,
-      dueDate: form.dueDate,
-      notes: form.notes.trim(),
-    });
+    try {
+      const response = await createWorkItemApi({
+        title: form.title.trim(),
+        team: form.team.trim(),
+        owner: form.owner.trim(),
+        severity: form.severity,
+        estimate: form.estimate,
+        dueDate: form.dueDate,
+        notes: form.notes.trim(),
+      });
 
-    setItems((current) => [nextItem, ...current]);
-    setSelectedId(nextItem.id);
-    setForm(defaultForm);
-    setNotice("Work item added");
+      setItems((current) => [response.item, ...current]);
+      setAnalytics(response.analytics);
+      setSelectedId(response.item.id);
+      setForm(defaultForm);
+      setNotice("Work item saved to SQLite");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Work item could not be saved");
+    }
   }
 
   async function copySummary() {
@@ -107,24 +153,47 @@ function App() {
     }
   }
 
-  function restoreDemoData() {
-    const nextItems = resetItems();
-    setItems(nextItems);
-    setSelectedId(nextItems[0]?.id ?? "");
-    setNotice("Demo data restored");
+  async function exportRelease() {
+    try {
+      const text = await exportReleaseJson();
+      await navigator.clipboard.writeText(text);
+      setNotice("Release JSON copied");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Export failed");
+    }
+  }
+
+  async function restoreDemoData() {
+    try {
+      const response = await resetDemoApi();
+      setItems(response.items);
+      setAnalytics(response.analytics);
+      setSelectedId(response.items[0]?.id ?? "");
+      setNotice("SQLite demo data restored");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Reset failed");
+    }
   }
 
   return (
     <main className="app-shell">
       <section className="topbar" aria-label="SprintScope overview">
         <div>
-          <p className="eyebrow">Release readiness workspace</p>
-          <h1>SprintScope</h1>
+          <p className="eyebrow">Full-stack release operations workspace</p>
+          <h1>SprintScope Pro</h1>
         </div>
         <div className="topbar-actions">
+          <div className="session-pill" aria-label="Signed in user">
+            <ShieldCheck size={17} aria-hidden="true" />
+            <span>{session?.user.role ?? "loading"}</span>
+          </div>
           <button className="ghost-button" type="button" onClick={restoreDemoData}>
             <RotateCcw size={17} aria-hidden="true" />
             Reset demo
+          </button>
+          <button className="ghost-button" type="button" onClick={exportRelease}>
+            <Download size={17} aria-hidden="true" />
+            Export JSON
           </button>
           <button className="primary-button" type="button" onClick={copySummary}>
             <ClipboardCopy size={17} aria-hidden="true" />
@@ -135,13 +204,21 @@ function App() {
 
       <section className="metrics-grid" aria-label="Release metrics">
         <Metric label="Active work" value={summary.active} helper={`${summary.totalEstimate} estimate points`} />
-        <Metric label="High risk" value={summary.atRisk} helper="Needs owner attention" tone="danger" />
+        <Metric label="High risk" value={analytics?.highRisk ?? summary.atRisk} helper="Backend risk engine" tone="danger" />
         <Metric label="Overdue" value={summary.overdue} helper="Past committed date" tone="warning" />
-        <Metric label="Ready" value={summary.ready} helper="Cleared for release" tone="success" />
+        <Metric label="Avg risk" value={analytics?.averageRisk ?? 0} helper="Calculated by API" tone="success" />
       </section>
 
       <section className="workspace">
         <aside className="control-panel" aria-label="Filters and new work item">
+          <div className="api-status">
+            <Database size={17} aria-hidden="true" />
+            <div>
+              <strong>{isLoading ? "Connecting" : "SQLite API online"}</strong>
+              <span>{analytics?.topRisks.length ?? 0} tracked risk signals</span>
+            </div>
+          </div>
+
           <div className="panel-heading">
             <Filter size={18} aria-hidden="true" />
             <h2>Filters</h2>
@@ -305,7 +382,11 @@ function App() {
         </section>
 
         <aside className="detail-panel" aria-label="Selected work item">
-          {selectedItem ? <DetailPanel item={selectedItem} onStatusChange={updateStatus} /> : <EmptyDetail />}
+          {selectedItem ? (
+            <DetailPanel item={selectedItem} analytics={analytics} onStatusChange={updateStatus} />
+          ) : (
+            <EmptyDetail />
+          )}
         </aside>
       </section>
 
@@ -383,13 +464,16 @@ function WorkCard({
 
 function DetailPanel({
   item,
+  analytics,
   onStatusChange,
 }: {
   item: WorkItem;
+  analytics: Analytics | null;
   onStatusChange: (itemId: string, status: Status) => void;
 }) {
   const score = riskScore(item);
   const level = riskLevel(score);
+  const teamAnalytics = analytics?.byTeam.find((team) => team.team === item.team);
 
   return (
     <div>
@@ -426,6 +510,14 @@ function DetailPanel({
         <div>
           <dt>Severity</dt>
           <dd>{severityLabels[item.severity]}</dd>
+        </div>
+        <div>
+          <dt>Team risk</dt>
+          <dd>{teamAnalytics?.highRisk ?? 0} high</dd>
+        </div>
+        <div>
+          <dt>Updated</dt>
+          <dd>{formatDate(item.updatedAt)}</dd>
         </div>
       </dl>
       <label className="field">
